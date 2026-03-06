@@ -1,0 +1,28 @@
+# ignore everything by default
+*
+
+# allow folders traversal
+!*/
+
+# allow only code/notebooks
+!*.ipynb
+!*.py
+!README.md
+!.gitignore
+
+# always ignore notebook temp
+.ipynb_checkpoints/
+
+# large/binary/data files
+*.csv
+*.xls
+*.xlsx
+*.parquet
+*.pkl
+*.joblib
+*.h5
+*.hdf5
+*.pt
+*.pth
+*.onnx
+*.pdf
