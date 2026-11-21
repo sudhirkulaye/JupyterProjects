@@ -45,6 +45,9 @@ def main(argv=None):
         except Exception as exc:
             print(f"  {sym}: failed ({type(exc).__name__}: {str(exc)[:80]}) - try again in a few minutes")
             continue
+        if not any(r["#Count"] or r["TP(Avg)"] or r["Current Price"] for r in got):
+            print(f"  {sym}: Yahoo has no data at all for this symbol (spelling?) - nothing saved for it")
+            continue
         if not any(r["#Count"] or r["TP(Avg)"] for r in got):
             empty.append(sym)
         rows += got
