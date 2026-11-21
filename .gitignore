@@ -26,3 +26,6 @@
 *.pth
 *.onnx
 *.pdf
+
+# Claude Code working folder (session worktrees, settings): never commit
+.claude/
