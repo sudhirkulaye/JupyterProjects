@@ -76,7 +76,7 @@ def main(argv=None):
                             [{"action": "ADDED", "ticker": s, "detail": f"by fetch_ticker.py {datetime.now():%d-%b-%Y}"}
                              for s in missing])
         print(f"Added to YahooFinanceTickers.csv: {', '.join(missing)}")
-    print("Done. Rebuild the dashboard (2_Build_WeeklyDashboard.bat) to see the change.")
+    print("Done. Next: 3_Build_WeeklyDashboard.bat for the dashboard, 4_Load_Consensus_To_DB.bat for the database.")
     return 0
 
 

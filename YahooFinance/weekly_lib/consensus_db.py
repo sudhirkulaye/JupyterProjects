@@ -7,7 +7,7 @@ Yahoo symbols are mapped to stock_universe tickers:
 Unmapped symbols are stored under the Yahoo symbol so nothing is lost.
 
 A separate step from the download: run 4_Load_Consensus_To_DB.bat (YahooConsensus folder) on each laptop
-whose database should be updated; it reloads every week. Or:  python -m weekly_lib.consensus_db [--full]
+whose database should be updated; it makes the table an exact copy of the CSV. Or:  python -m weekly_lib.consensus_db [--full]
 """
 import argparse
 import math
@@ -57,9 +57,9 @@ INSERT = text(
     + ", ".join(f"{c} = VALUES({c})" for c in VALUE_COLS))
 
 
-def ticker_map(engine, symbols):
+def ticker_map(engine, symbols, known=None):
     """Yahoo symbol -> stock_universe ticker."""
-    known = db.load_known_tickers(engine)
+    known = db.load_known_tickers(engine) if known is None else known
     renames = db.load_ticker_renames(engine)
     bse_by_symbol = {sym.upper(): code for code, sym in db.load_bse_symbols(engine).items()}
     out = {}
@@ -83,22 +83,27 @@ def _clean(v):
 
 
 def load(engine, history_file, full=False, log=print):
-    """Upsert history rows into yahoo_consensus. Only weeks newer than the table's latest date unless full=True.
-    Returns the number of rows written."""
+    """Write history rows into yahoo_consensus. full=True makes the table an exact copy of the file: the old rows
+    are replaced in one transaction, so a renamed or re-fetched ticker leaves no stale rows behind. Otherwise only
+    weeks newer than the table's latest date are added. Returns the number of rows written."""
     with engine.begin() as conn:
         conn.execute(text(DDL))
-        last = conn.execute(text("SELECT MAX(date) FROM yahoo_consensus")).scalar()
+        last, weeks_in_db = conn.execute(text("SELECT MAX(date), COUNT(DISTINCT date) FROM yahoo_consensus")).one()
 
     df = pd.read_csv(history_file, low_memory=False)
     df["Date"] = pd.to_datetime(df["Date"]).dt.date
+    if full and df["Date"].nunique() < (weeks_in_db or 0):
+        raise SystemExit(f"Not loaded: {history_file} has {df['Date'].nunique()} weeks but the database already has "
+                         f"{weeks_in_db}. Copy the complete YahooConsensusHistory.csv and run again.")
     if last is not None and not full:
         df = df[df["Date"] > last]
     if df.empty:
         log(f"yahoo_consensus: already up to date (latest {last})")
         return 0
 
-    mapping = ticker_map(engine, df["YAHOO Ticker"].dropna().unique())
-    unmapped = sorted(s for s, t in mapping.items() if t == s.strip().upper() and t not in db.load_known_tickers(engine))
+    known = db.load_known_tickers(engine)                  # read once (it used to be re-read for every symbol)
+    mapping = ticker_map(engine, df["YAHOO Ticker"].dropna().unique(), known)
+    unmapped = sorted(s for s, t in mapping.items() if t not in known)
     df = df.rename(columns=COLUMNS)
     df["yahoo_ticker"] = df["YAHOO Ticker"].str.strip().str.upper()
     df["ticker"] = df["YAHOO Ticker"].map(mapping)
@@ -108,11 +113,14 @@ def load(engine, history_file, full=False, log=print):
 
     rows = [{k: _clean(v) for k, v in r.items()}
             for r in df[["ticker", "date", "fin_year", "yahoo_ticker"] + VALUE_COLS].to_dict("records")]
-    with engine.begin() as conn:
+    with engine.begin() as conn:                           # one transaction: the website never sees a half load
+        if full:
+            conn.execute(text("DELETE FROM yahoo_consensus"))
         for i in range(0, len(rows), 2000):
             conn.execute(INSERT, rows[i:i + 2000])
     weeks = df["date"].nunique()
-    log(f"yahoo_consensus: wrote {len(rows)} rows for {weeks} week(s) ({df['date'].min()} to {df['date'].max()})"
+    log(f"yahoo_consensus: {'replaced with' if full else 'added'} {len(rows)} rows for {weeks} week(s) "
+        f"({df['date'].min()} to {df['date'].max()})"
         + (f"; {len(unmapped)} symbols not in stock_universe: {', '.join(unmapped[:15])}"
            + (" ..." if len(unmapped) > 15 else "") if unmapped else ""))
     return len(rows)

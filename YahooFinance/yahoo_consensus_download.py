@@ -1,4 +1,4 @@
-"""Step 1 of 2 - weekly Yahoo consensus download.
+"""Weekly step 1 of 4 - Yahoo consensus download (CSV files only; the database load is step 4).
 
   1. Adds new MOSL / AMBIT coverage to YahooFinanceTickers.csv (report PDFs added to CompanyResearchReports in the
      last 10 days). Symbol changes are only suggested; apply them with ticker_change.py.
@@ -61,7 +61,7 @@ def update_tickers(log, dry_run):
         log(f"  Report files not added (check the name): {', '.join(skipped[:10])}")
     hints = tickers.rename_suggestions(result, db.load_ticker_renames(engine))
     if hints:
-        log("  stock_universe shows these symbols as renamed (nothing changed; use 3_Ticker_Change_or_Refetch.bat): "
+        log("  stock_universe shows these symbols as renamed (nothing changed; use 2_Ticker_Change_or_Refetch.bat): "
             + ", ".join(f"{old} -> {new}" for old, new in hints))
     return result
 
@@ -124,7 +124,8 @@ def main(argv=None):
 
     added = history.merge_history(C.CONSENSUS_DIR, C.HISTORY_FILE)
     log(f"YahooConsensusHistory.csv: {'added ' + ', '.join(added) if added else 'already up to date'}")
-    log("Done. Next: run 2_Build_WeeklyDashboard.bat; 4_Load_Consensus_To_DB.bat loads the website database")
+    log("Done. Next: 2_Ticker_Change_or_Refetch.bat only if a ticker needs fixing, then 3_Build_WeeklyDashboard.bat "
+        "and 4_Load_Consensus_To_DB.bat (database)")
     return 0
 
 

@@ -1,4 +1,4 @@
-"""Step 2 of 2 - weekly stock dashboard.
+"""Weekly step 3 of 4 - stock dashboard.
 
 Builds Dashboard/WeeklyDashboard.html (always the latest) and Dashboard/yyyymmdd_WeeklyDashboard.html (a copy kept for
 that consensus week) from the files step 1 downloaded. Nothing is fetched from the internet, so it can be re-run as

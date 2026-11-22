@@ -3,7 +3,7 @@ from pathlib import Path
 
 # ---------------------------------------------------------------- folders
 STOCK_DIR = Path(r"C:\MyDocuments\03Business\05ResearchAndAnalysis\StockInvestments")
-YC_DIR = STOCK_DIR / "ResearchReports" / "YahooConsensus"       # only the 2 .bat files + ticker list live here
+YC_DIR = STOCK_DIR / "ResearchReports" / "YahooConsensus"       # only the 4 .bat files + ticker list live here
 TICKERS_FILE = YC_DIR / "YahooFinanceTickers.csv"
 CONSENSUS_DIR = YC_DIR / "WeeklyConsensus"                       # yyyymmdd_YahooConsensus.csv files
 HISTORY_FILE = CONSENSUS_DIR / "YahooConsensusHistory.csv"       # merged history (also uploaded to Cowork)

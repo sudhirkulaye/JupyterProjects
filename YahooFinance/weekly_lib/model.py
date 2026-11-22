@@ -209,7 +209,7 @@ def build_model(today=None):
     checks.insert(1, ("ok", f"Prices: nse_price_history to {_fmt_date(px_date)}; indices to {_fmt_date(idx.index.max())}"))
     if rename_hints:
         checks.append(("warn", "stock_universe shows these symbols as renamed. Nothing was changed: run "
-                               "3_Ticker_Change_or_Refetch.bat to change them in every consensus CSV (and edit "
+                               "2_Ticker_Change_or_Refetch.bat to change them in every consensus CSV (and edit "
                                "watchlists.properties yourself): " + ", ".join(rename_hints)))
     no_price = sorted(latest_tickers - set(prices.columns[prices.loc[px_date].notna()]))
     scored = m[m["eligible"]]
