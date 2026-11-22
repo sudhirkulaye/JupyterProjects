@@ -18,7 +18,7 @@ ANALYST_TRACKER_XLSX = STOCK_DIR / "QuarterResultsScreenerExcels" / "DBInsert" /
 ANALYST_RECO_SHEET = "AnalystsReco"
 AMBIT_XLSX = STOCK_DIR / "CoworkProject" / "ResearchIntelligence" / "AnalystVeiwInsight.xlsx"
 WATCHLISTS_FILE = STOCK_DIR / "QuarterResultsScreenerExcels" / "watchlists.properties"
-DB_ENV_FILE = Path(r"C:\Users\Sudhir Kulaye\JupyterProjects\DataBaseAccess\DBConfig.env")
+DB_ENV_FILE = Path.home() / "JupyterProjects" / "DataBaseAccess" / "DBConfig.env"   # C:\Users\<user>\... on either laptop
 
 # ---------------------------------------------------------------- download
 NEW_COVERAGE_DAYS = 10            # report PDFs created / changed in the last N days count as new coverage

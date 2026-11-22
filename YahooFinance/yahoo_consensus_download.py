@@ -124,7 +124,7 @@ def main(argv=None):
 
     added = history.merge_history(C.CONSENSUS_DIR, C.HISTORY_FILE)
     log(f"YahooConsensusHistory.csv: {'added ' + ', '.join(added) if added else 'already up to date'}")
-    log("Done. Next: run 2_Build_WeeklyDashboard.bat")
+    log("Done. Next: run 2_Build_WeeklyDashboard.bat; 4_Load_Consensus_To_DB.bat loads the website database")
     return 0
 
 
