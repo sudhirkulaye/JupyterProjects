@@ -20,36 +20,41 @@ def _raw(v):
     return v.strftime("%Y-%m-%d") if isinstance(v, (pd.Timestamp, datetime)) else str(v)
 
 
-def build_model(today=None):
-    today = pd.Timestamp(today or datetime.now().date())
-    checks = []                                     # (level, text) shown in the Data checks panel
-    engine = db.get_engine(C.DB_ENV_FILE)
-    renames = db.load_ticker_renames(engine)        # old NSE symbol -> current symbol (only suggested, never applied)
+def idea_lists(m, top_n, min_analysts):
+    """The dashboard's idea lists from one row per stock. Needs: eligible, score, pct, pct_4w, fno, eps4, eps13, mom,
+    count, count_chg13, persist, price. Shared with dashboard_db so the website shows the same lists."""
+    el = m[m["eligible"]].copy()
+    el["jump"] = el["pct"] - el["pct_4w"].fillna(50)        # newly covered stocks count from the middle
+    shown_long = el.sort_values("score", ascending=False).head(top_n).index
+    shown_short = el[el["fno"]].sort_values("score").head(top_n).index
+    return {
+        "long": el.sort_values("score", ascending=False).head(60),
+        "short": el[el["fno"]].sort_values("score").head(top_n),
+        "div_short": el[(el["eps4"] < -0.01) & (el["mom"] > 0.03)]
+        .assign(gap=lambda d: d["mom"] - d["eps4"]).sort_values("gap", ascending=False).head(40),
+        "div_long": el[(el["eps4"] > 0.01) & (el["mom"] < -0.03)]
+        .assign(gap=lambda d: d["eps4"] - d["mom"]).sort_values("gap", ascending=False).head(40),
+        "new_top": el[(el["pct"] >= 80) & ~(el["pct_4w"] >= 80) & ~el.index.isin(shown_long)]
+        .sort_values("jump", ascending=False).head(12),
+        "new_bottom": el[(el["pct"] <= 20) & ~(el["pct_4w"] <= 20) & ~el.index.isin(shown_short)]
+        .sort_values("jump").head(12),
+        "coverage": m[(m["count_chg13"] >= 3) & m["price"].notna()]
+        .sort_values(["count_chg13", "count"], ascending=False).head(12),
+        "persistent": m[(m["persist"] >= 6) & (m["count"] >= min_analysts)]
+        .sort_values(["persist", "eps13"], ascending=False).head(12),
+    }
 
-    # ------------------------------------------------ consensus history
-    cons_long, notes = load.load_consensus(C.CONSENSUS_DIR)
+
+def load_core(engine, extra_tickers=(), consensus_dir=None):
+    """Consensus history, DB prices (renames joined, pending splits adjusted), index levels and the weekly scores.
+    Needs no Excel file, so the website laptop can run it too (dashboard_db)."""
+    checks = []
+    renames = db.load_ticker_renames(engine)        # old NSE symbol -> current symbol (only suggested, never applied)
+    cons_long, notes = load.load_consensus(consensus_dir or C.CONSENSUS_DIR)
     checks += [("info", n) for n in notes]
     cons = calc.Consensus(cons_long)
-    as_of = cons.dates[-1]
-    prev_week = cons.dates[-2] if len(cons.dates) > 1 else as_of
+    universe = set(cons.tickers) | set(extra_tickers)
 
-    # ------------------------------------------------ watchlists and Focus Five (from the DB portfolio)
-    watch = load.load_watchlists(C.WATCHLISTS_FILE)
-    holdings = db.load_focus_holdings(engine, C.FOCUS_MEMBER_ID, C.FOCUS_COMPOSITE_ID)
-    holdings["ticker"] = holdings["ticker"].str.upper()
-    focus = [t for t in holdings["ticker"] if t not in C.CASH_TICKERS]
-    shortlist = {}
-    for section in C.SHORTLIST_SECTIONS:
-        label = section.split("_", 1)[-1].replace("Shortlisted", "").strip() or "Shortlisted"
-        for t in watch.get(section, []):
-            shortlist.setdefault(t, []).append(label)
-    universe = set(cons.tickers) | set(focus) | set(shortlist)
-    watch_all = {t for tickers in watch.values() for t in tickers}
-    rename_hints = sorted({f"{t} → {renames[re.sub(r'-(EQ|BE)$', '', t)]}"
-                           for t in set(cons.tickers) | watch_all
-                           if renames.get(re.sub(r"-(EQ|BE)$", "", t), t) != t})
-
-    # ------------------------------------------------ database: prices, indices, metadata, TWRR
     # 12-1 momentum needs a year of prices before the first scored week
     price_start = min(pd.Timestamp(C.PRICE_HISTORY_START), cons.dates[0] - pd.DateOffset(months=14)).strftime("%Y-%m-%d")
     renamed_from = {new: old for old, new in renames.items() if new in universe and old not in universe}
@@ -66,25 +71,55 @@ def build_model(today=None):
     checks += [("warn", n) for n in notes]
     breaks = calc.price_breaks(events)
     prices_ff = prices.ffill()
-    idx = db.load_index_levels(engine, C.INDICES, C.PRICE_HISTORY_START)
+    idx = db.load_index_levels(engine, C.INDICES, price_start)
+
+    cons.apply_corporate_actions(events)            # consensus clean-up (splits, odd jumps)
+    cons.flag_suspect_jumps()
+    checks += [("info", n) for n in cons.notes]
+    scores, hist = calc.score_history(cons, prices, prices_ff, C.MIN_ANALYSTS, C.SCORE_WEEKS, C.FORWARD_WEEKS, breaks)
+    return {"checks": checks, "renames": renames, "cons_long": cons_long, "cons": cons, "universe": universe,
+            "prices": prices, "prices_ff": prices_ff, "events": events, "idx": idx, "scores": scores, "hist": hist}
+
+
+def build_model(today=None):
+    today = pd.Timestamp(today or datetime.now().date())
+    engine = db.get_engine(C.DB_ENV_FILE)
+
+    # ------------------------------------------------ watchlists and Focus Five (from the DB portfolio)
+    watch = load.load_watchlists(C.WATCHLISTS_FILE)
+    holdings = db.load_focus_holdings(engine, C.FOCUS_MEMBER_ID, C.FOCUS_COMPOSITE_ID)
+    holdings["ticker"] = holdings["ticker"].str.upper()
+    focus = [t for t in holdings["ticker"] if t not in C.CASH_TICKERS]
+    shortlist = {}
+    for section in C.SHORTLIST_SECTIONS:
+        label = section.split("_", 1)[-1].replace("Shortlisted", "").strip() or "Shortlisted"
+        for t in watch.get(section, []):
+            shortlist.setdefault(t, []).append(label)
+
+    # ------------------------------------------------ consensus, prices and scores through time
+    core = load_core(engine, set(focus) | set(shortlist))
+    checks = core["checks"]                         # (level, text) shown in the Data checks panel
+    renames, cons_long, cons, universe = core["renames"], core["cons_long"], core["cons"], core["universe"]
+    prices, prices_ff, idx, scores, hist = core["prices"], core["prices_ff"], core["idx"], core["scores"], core["hist"]
+    as_of = cons.dates[-1]
+    prev_week = cons.dates[-2] if len(cons.dates) > 1 else as_of
+    watch_all = {t for tickers in watch.values() for t in tickers}
+    rename_hints = sorted({f"{t} → {renames[re.sub(r'-(EQ|BE)$', '', t)]}"
+                           for t in set(cons.tickers) | watch_all
+                           if renames.get(re.sub(r"-(EQ|BE)$", "", t), t) != t})
+    idx = idx.loc[pd.Timestamp(C.PRICE_HISTORY_START):]
     idx_ff = idx.ffill()
     meta = db.load_stock_meta(engine, universe)
     port_twrr = db.load_portfolio_twrr(engine, C.FOCUS_MEMBER_ID, C.FOCUS_PORTFOLIO_ID)
     idx_twrr = db.load_index_twrr(engine)
     px_date = prices.index.max()
 
-    # ------------------------------------------------ consensus clean-up (splits, odd jumps)
-    cons.apply_corporate_actions(events)
-    cons.flag_suspect_jumps()
-    checks += [("info", n) for n in cons.notes]
-
     # ------------------------------------------------ Excel inputs (read from temp copies; Excel may be open)
     reco, reco_stats = load.load_analyst_reco(load.temp_copy(C.ANALYST_TRACKER_XLSX), C.ANALYST_RECO_SHEET, today)
     ambit_book = pd.ExcelFile(load.temp_copy(C.AMBIT_XLSX))   # opened once: each open of this 7 MB file takes ~25 s
     cls = load.load_ambit_classification(ambit_book)   # Industry / Sub-Industry labels only; no qualitative notes
 
-    # ------------------------------------------------ scores through time + scoreboard
-    scores, hist = calc.score_history(cons, prices, prices_ff, C.MIN_ANALYSTS, C.SCORE_WEEKS, C.FORWARD_WEEKS, breaks)
+    # ------------------------------------------------ scoreboard
     stats = calc.scoreboard_stats(hist, C.FORWARD_WEEKS)
     breadth = calc.breadth_history(scores)
     sc = scores[as_of]
@@ -152,26 +187,7 @@ def build_model(today=None):
     ind_tbl, sub_tbl = calc.sector_tables(sector_metrics, cls)
 
     # ------------------------------------------------ idea lists
-    el = m[m["eligible"]].copy()
-    el["jump"] = el["pct"] - el["pct_4w"].fillna(50)        # newly covered stocks count from the middle
-    shown_long = el.sort_values("score", ascending=False).head(C.TOP_N).index
-    shown_short = el[el["fno"]].sort_values("score").head(C.TOP_N).index
-    lists = {
-        "long": el.sort_values("score", ascending=False).head(60),
-        "short": el[el["fno"]].sort_values("score").head(C.TOP_N),
-        "div_short": el[(el["eps4"] < -0.01) & (el["mom"] > 0.03)]
-        .assign(gap=lambda d: d["mom"] - d["eps4"]).sort_values("gap", ascending=False).head(40),
-        "div_long": el[(el["eps4"] > 0.01) & (el["mom"] < -0.03)]
-        .assign(gap=lambda d: d["eps4"] - d["mom"]).sort_values("gap", ascending=False).head(40),
-        "new_top": el[(el["pct"] >= 80) & ~(el["pct_4w"] >= 80) & ~el.index.isin(shown_long)]
-        .sort_values("jump", ascending=False).head(12),
-        "new_bottom": el[(el["pct"] <= 20) & ~(el["pct_4w"] <= 20) & ~el.index.isin(shown_short)]
-        .sort_values("jump").head(12),
-        "coverage": m[(m["count_chg13"] >= 3) & m["price"].notna()]
-        .sort_values(["count_chg13", "count"], ascending=False).head(12),
-        "persistent": m[(m["persist"] >= 6) & (m["count"] >= C.MIN_ANALYSTS)]
-        .sort_values(["persist", "eps13"], ascending=False).head(12),
-    }
+    lists = idea_lists(m, C.TOP_N, C.MIN_ANALYSTS)
 
     # ------------------------------------------------ last month's lists, marked to market
     t0 = cons.past_date(t, C.FORWARD_WEEKS)
