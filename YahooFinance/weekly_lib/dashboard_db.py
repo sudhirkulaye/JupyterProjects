@@ -1,11 +1,13 @@
-"""Write the weekly dashboard numbers into three MySQL tables for the website (timelineofwealth):
+"""Write the weekly dashboard numbers into MySQL tables for the website (timelineofwealth):
 
   consensus_weekly_score   one row per week_date + ticker
   consensus_weekly_group   one row per week_date + watchlist_group (101+ sections of watchlists.properties)
   consensus_scoreboard     one row per week_date
+  consensus_broker_view    latest verified AnalystsReco report per ticker + broker (needs AnalystViewTracker.xlsx;
+                           left unchanged if that file is missing)
 
 Same scores and idea lists as the HTML dashboard (model.load_core / model.idea_lists), from the consensus CSVs and
-nse_price_history only: no Excel file, no broker names, no portfolio data. Called by 4_Load_Consensus_To_DB.bat right
+nse_price_history; no portfolio data. Called by 4_Load_Consensus_To_DB.bat right
 after consensus_db.load. A full load rewrites every week in one transaction; otherwise only the last few weeks
 (their forward returns fill in over 4 weeks). Re-running is always safe.
     python -m weekly_lib.dashboard_db [--full]
@@ -46,6 +48,7 @@ DDL = [
   is_divergence tinyint(1) NOT NULL DEFAULT 0,
   is_emerging tinyint(1) NOT NULL DEFAULT 0,
   price_at_score decimal(20,3) DEFAULT NULL COMMENT 'nse_price_history close on or before week_date',
+  {new_cols},
   PRIMARY KEY (week_date, ticker),
   KEY index_consensus_weekly_score_ticker (ticker)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8 COLLATE=utf8_unicode_ci COMMENT='Weekly composite score per stock (dashboard_db.py)'""",
@@ -71,7 +74,31 @@ DDL = [
   breadth_down decimal(8,6) DEFAULT NULL COMMENT 'share below -0.5%',
   PRIMARY KEY (week_date)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8 COLLATE=utf8_unicode_ci COMMENT='Weekly score track record (dashboard_db.py)'""",
+    """CREATE TABLE IF NOT EXISTS consensus_broker_view (
+  ticker varchar(30) COLLATE utf8_unicode_ci NOT NULL COMMENT 'PK stock_universe ticker',
+  broker varchar(10) COLLATE utf8_unicode_ci NOT NULL COMMENT 'PK MOSL / AMBIT / PL / AXIS',
+  reco varchar(20) COLLATE utf8_unicode_ci DEFAULT NULL,
+  target decimal(20,3) DEFAULT NULL,
+  report_date date DEFAULT NULL,
+  quarter varchar(10) COLLATE utf8_unicode_ci DEFAULT NULL,
+  PRIMARY KEY (ticker, broker)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8 COLLATE=utf8_unicode_ci
+  COMMENT='Latest verified AnalystsReco report per ticker and broker (dashboard_db.py)'""",
 ]
+# columns added to consensus_weekly_score after its first release: in the CREATE above for new installs, and
+# added by ALTER TABLE to an existing table (MySQL 5.7 has no ADD COLUMN IF NOT EXISTS)
+NEW_SCORE_COLS = [
+    ("eps_rev_4w", "decimal(12,6) DEFAULT NULL COMMENT 'EPS 4W revision, both FYs averaged (dashboard EPS 4W)'"),
+    ("eps_rev_13w", "decimal(12,6) DEFAULT NULL COMMENT 'EPS 13W revision, both FYs averaged'"),
+    ("score_pct", "decimal(8,4) DEFAULT NULL COMMENT 'score percentile, 100 = best'"),
+    ("z_eps", "decimal(10,6) DEFAULT NULL COMMENT 'score component: EPS revision rank z'"),
+    ("z_tp", "decimal(10,6) DEFAULT NULL COMMENT 'score component: TP revision rank z'"),
+    ("z_rev", "decimal(10,6) DEFAULT NULL COMMENT 'score component: minus 4W price rank z (reversal)'"),
+    ("z_mom12", "decimal(10,6) DEFAULT NULL COMMENT 'score component: 12-1 momentum rank z'"),
+    ("count_chg_13w", "int(5) DEFAULT NULL COMMENT 'change in analyst count over 13 weeks'"),
+    ("consensus_age_weeks", "int(5) DEFAULT NULL COMMENT 'weeks since the Yahoo TP or EPS last changed'"),
+]
+DDL[0] = DDL[0].replace("{new_cols}", ",\n  ".join(f"{c} {d}" for c, d in NEW_SCORE_COLS))
 TABLES = ["consensus_weekly_score", "consensus_weekly_group", "consensus_scoreboard"]
 
 
@@ -124,8 +151,9 @@ def week_rows(core, t, fno, groups, nifty):
     m = pd.DataFrame(index=tk)
     m["count"] = count.reindex(tk)
     m["eligible"] = sc["eligible"].reindex(tk).fillna(False).astype(bool)
-    for col in ("score", "pct", "mom", "mom12"):
+    for col in ("score", "pct", "mom", "mom12", "z_eps", "z_tp", "z_rev", "z_mom12"):
         m[col] = sc[col].reindex(tk)
+    m["consensus_age_weeks"] = cons.change_stats(t)["age"].reindex(tk)
     m["pct_4w"] = scores[p4]["pct"].reindex(tk) if p4 in scores else np.nan
     m["fno"] = fno.reindex(tk, fill_value=False).astype(bool)
     m["eps4"], m["eps13"] = rev4["eps"].reindex(tk), rev13["eps"].reindex(tk)
@@ -182,7 +210,8 @@ def week_rows(core, t, fno, groups, nifty):
 
 SCORE_COLS = ["analyst_count", "watchlist_group", "tp_rev_1w", "tp_rev_4w", "eps_fy1_rev_4w", "eps_fy2_rev_4w",
               "rev_fy1_rev_4w", "persistence_13w", "mom_4w", "mom_12_1", "score", "score_rank", "is_long", "is_short",
-              "is_divergence", "is_emerging", "price_at_score"]
+              "is_divergence", "is_emerging", "price_at_score"] + [c for c, _ in NEW_SCORE_COLS]
+BROKER_COLS = ["reco", "target", "report_date", "quarter"]
 GROUP_COLS = ["stock_count", "avg_eps_rev_4w", "up_count", "down_count", "avg_return_1m", "rel_return_1m_vs_nifty"]
 BOARD_COLS = ["ic_spearman", "long_fwd_ret", "short_fwd_ret", "spread_fwd_ret", "hit_rate", "breadth_up", "breadth_down"]
 
@@ -202,6 +231,39 @@ def _insert(conn, table, keys, cols, rows):
     rows = [{k: _clean(v) for k, v in r.items()} for r in rows]
     for i in range(0, len(rows), 2000):
         conn.execute(sql, rows[i:i + 2000])
+
+
+def add_missing_columns(engine):
+    """ALTER an existing consensus_weekly_score for the columns added later (checked in information_schema)."""
+    with engine.begin() as conn:
+        have = {r[0].lower() for r in conn.execute(text(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_schema = DATABASE() AND table_name = 'consensus_weekly_score'"))}
+        for col, definition in NEW_SCORE_COLS:
+            if col not in have:
+                conn.execute(text(f"ALTER TABLE consensus_weekly_score ADD COLUMN {col} {definition}"))
+
+
+def broker_rows(engine, log):
+    """Latest verified (yellow) AnalystsReco report per ticker and broker, at most BROKER_VIEW_MAX_AGE_DAYS old.
+    None if the Excel file is missing or unreadable (the table is then left as it is)."""
+    today = pd.Timestamp.now().normalize()
+    try:
+        reco, _ = inputs.load_analyst_reco(inputs.temp_copy(C.ANALYST_TRACKER_XLSX), C.ANALYST_RECO_SHEET, today)
+        latest = calc.broker_views(reco, today, pd.Series(dtype=float), C.RECO_SCORE, C.BROKER_VIEW_MAX_AGE_DAYS,
+                                   today - pd.Timedelta(days=7))["latest"].reset_index()
+    except Exception as exc:
+        log(f"WARNING consensus_broker_view not updated: could not read {C.ANALYST_TRACKER_XLSX} "
+            f"({type(exc).__name__}: {str(exc)[:120]})")
+        return None
+    latest["Broker"] = latest["Broker"].astype(str).str.strip().str.upper()
+    latest = latest[latest["Broker"].isin(C.BROKERS)].copy()
+    mapping = consensus_db.ticker_map(engine, latest["Ticker"].dropna().unique())
+    latest["ticker"] = latest["Ticker"].map(mapping)
+    latest = latest.dropna(subset=["ticker"]).sort_values("Date").drop_duplicates(["ticker", "Broker"], keep="last")
+    return [{"ticker": r.ticker, "broker": r.Broker, "reco": None if pd.isna(r.Reco) else str(r.Reco).strip(),
+             "target": r.Target, "report_date": r.Date.date() if pd.notna(r.Date) else None,
+             "quarter": None if pd.isna(r.Quarter) else str(r.Quarter).strip()} for r in latest.itertuples()]
 
 
 def load(engine, full=False, consensus_dir=None, watchlists_file=None, log=print):
@@ -225,19 +287,26 @@ def load(engine, full=False, consensus_dir=None, watchlists_file=None, log=print
         m, grp, board = week_rows(core, t, fno, groups, nifty)
         wd = t.date()
         m = m.rename(columns={"count": "analyst_count", "persist": "persistence_13w", "mom": "mom_4w",
-                              "mom12": "mom_12_1", "price": "price_at_score"})
+                              "mom12": "mom_12_1", "price": "price_at_score", "eps4": "eps_rev_4w",
+                              "eps13": "eps_rev_13w", "pct": "score_pct", "count_chg13": "count_chg_13w"})
         m["ticker"] = [mapping.get(x, x) for x in m.index]
         m = m.drop_duplicates("ticker")
-        for col in ("analyst_count", "persistence_13w", "score_rank"):
+        for col in ("analyst_count", "persistence_13w", "score_rank", "count_chg_13w", "consensus_age_weeks"):
             m[col] = m[col].astype("Int64").astype(object).where(m[col].notna(), None)
         score_rows += [{"week_date": wd, "ticker": r["ticker"], **{c: r[c] for c in SCORE_COLS}}
                        for r in m.to_dict("records")]
         group_rows += [{"week_date": wd, **g} for g in grp]
         board_rows.append({"week_date": wd, **board})
 
-    with engine.begin() as conn:                    # one transaction: the website never sees a half load
+    brokers = broker_rows(engine, log)
+    with engine.begin() as conn:                    # table definitions (MySQL commits DDL on its own)
         for ddl in DDL:
             conn.execute(text(ddl))
+    add_missing_columns(engine)
+    with engine.begin() as conn:                    # one transaction: the website never sees a half load
+        if brokers is not None:
+            conn.execute(text("DELETE FROM consensus_broker_view"))
+            _insert(conn, "consensus_broker_view", ["ticker", "broker"], BROKER_COLS, brokers)
         for table in TABLES:
             if full:
                 conn.execute(text(f"DELETE FROM {table}"))
@@ -248,7 +317,8 @@ def load(engine, full=False, consensus_dir=None, watchlists_file=None, log=print
         _insert(conn, "consensus_weekly_group", ["week_date", "watchlist_group"], GROUP_COLS, group_rows)
         _insert(conn, "consensus_scoreboard", ["week_date"], BOARD_COLS, board_rows)
     log(f"dashboard tables: {len(weeks)} week(s) ({weeks[0]:%Y-%m-%d} to {weeks[-1]:%Y-%m-%d}): "
-        f"{len(score_rows)} stock rows, {len(group_rows)} group rows, {len(board_rows)} scoreboard rows")
+        f"{len(score_rows)} stock rows, {len(group_rows)} group rows, {len(board_rows)} scoreboard rows"
+        + (f", {len(brokers)} broker views" if brokers is not None else ""))
     return len(score_rows)
 
 
