@@ -17,7 +17,7 @@ REPORTS_DIR = STOCK_DIR / "ResearchReports" / "CompanyResearchReports"
 ANALYST_TRACKER_XLSX = STOCK_DIR / "QuarterResultsScreenerExcels" / "DBInsert" / "AnalystViewTracker.xlsx"
 ANALYST_RECO_SHEET = "AnalystsReco"
 AMBIT_XLSX = STOCK_DIR / "CoworkProject" / "ResearchIntelligence" / "AnalystVeiwInsight.xlsx"
-WATCHLISTS_FILE = Path(r"C:\MyDocuments\03Business\Property\website\watchlists.properties")   # shared with the website
+WATCHLISTS_FILE = Path(r"C:\MyDocuments\03Business\11Property\website\watchlists.properties")   # shared with the website
 if not WATCHLISTS_FILE.exists():                                     # old location
     WATCHLISTS_FILE = STOCK_DIR / "QuarterResultsScreenerExcels" / "watchlists.properties"
 DB_ENV_FILE = Path.home() / "JupyterProjects" / "DataBaseAccess" / "DBConfig.env"   # C:\Users\<user>\... on either laptop
