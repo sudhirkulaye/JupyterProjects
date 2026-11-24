@@ -56,7 +56,7 @@ def main(argv=None):
             extra = f"  ({clash} dropped: {new} already present for that week)" if clash else ""
             print(f"  {path.name:<36} {n:>4} row(s){extra}")
     if sections:
-        print(f"Note: watchlists.properties still lists {old} in {', '.join(sections)} - edit that file by hand.")
+        print(f"Note: {C.WATCHLISTS_FILE} still lists {old} in {', '.join(sections)} - edit that file by hand.")
     if not plan or args.dry_run:
         return 0
     if not args.yes and input("Apply these changes? [y/N] ").strip().lower() not in ("y", "yes"):
